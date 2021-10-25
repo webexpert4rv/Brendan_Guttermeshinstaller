@@ -1,0 +1,72 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+ansible_group = "development_server"
+vagrant_ip = "192.168.100.100"
+vagrant_hostname = "superbrains.test"
+
+host_public_key = IO.read(File.join(Dir.home, ".ssh", "id_rsa.pub"))
+parent_project_dir = File.absolute_path(".")
+parent_admin_dir = File.absolute_path("./../superbrains_admin")
+
+
+# After a destroy, the firngerprint must bne deleted from known_hosts.
+# Aldue this command runs before actually destroying the instance,.. it should be good enough ;p
+system("
+    if [ #{ARGV[0]} = 'destroy' ]; then
+        echo 'Removing fingerprint for ~/.ssh/known_hosts'
+        sed -i '' '/\[127\.0\.0\.1\]:2222/d' ~/.ssh/known_hosts
+    fi
+")
+
+Vagrant.configure("2") do |config|
+    # Image
+    config.vm.box = "bento/ubuntu-19.10"
+
+   config.vm.provider :virtualbox do |v|
+        v.name = vagrant_hostname
+        v.memory = 2024
+        v.cpus = 2
+        v.customize ["modifyvm", :id, "--ioapic", "on"]
+        v.customize ["modifyvm", :id, "--audio", "none"]
+    end
+
+    # Network
+    config.vm.network "private_network", ip: vagrant_ip
+    config.vm.hostname = vagrant_hostname
+
+    # Synced folders
+    config.vm.synced_folder parent_project_dir, '/vagrant', disabled: true
+    config.vm.synced_folder parent_project_dir, "/vagrant/application"
+    config.vm.synced_folder parent_admin_dir, "/vagrant/admin",
+        :owner => "www-data",
+        :group => "www-data",
+        :mount_options => ['dmode=775', 'fmode=775']
+
+    config.vm.synced_folder  "./Web/public", "/vagrant/application/Web/public",
+        :owner => "www-data",
+        :group => "www-data",
+        :mount_options => ['dmode=775', 'fmode=775']
+
+    config.vm.network "forwarded_port", guest: 8000, host: 8000, host_ip: "127.0.0.1"
+
+    # SSH
+    config.ssh.insert_key = true
+    config.ssh.username = "vagrant"
+    config.ssh.password = "vagrant"
+
+    config.vm.provision :shell, :inline => <<-SCRIPT
+        set -e
+         echo '#{host_public_key}' >> /home/vagrant/.ssh/authorized_keys
+         chmod 600 /home/vagrant/.ssh/authorized_keys
+    SCRIPT
+
+    config.vm.provision "ansible" do |ansible|
+        ansible.raw_arguments  = "--ask-vault-pass"
+        ansible.config_file = "Deploy/Ansible/ansible.cfg"
+        ansible.playbook = "Deploy/Ansible/playbook-development.yml"
+        ansible.inventory_path  = "Deploy/Ansible/hosts.yml"
+        ansible.limit = ansible_group
+        ansible.compatibility_mode = '2.0'
+    end
+end
